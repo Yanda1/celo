@@ -1,3 +1,5 @@
+// truffle console --network test
+
 // Get deployed contract
 let contract = await YandaEscrow.deployed()
 
@@ -14,7 +16,7 @@ balance
 let accounts = await web3.eth.getAccounts()
 
 // Make a deposit from the customer account into contract
-let deposit = await web3.eth.sendTransaction({from: accounts[0], to: contract.address, value: 30})
+let deposit = await web3.eth.sendTransaction({from: accounts[1], to: contract.address, value: 30})
 
 // Check contract balance
 balance = await web3.eth.getBalance(contract.address)

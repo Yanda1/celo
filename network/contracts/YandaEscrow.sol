@@ -4,20 +4,15 @@ pragma solidity >=0.5.0 <0.7.0;
 contract YandaEscrow {
   enum State { AWAITING_PAYMENT, AWAITING_DELIVERY, AWAITING_VALIDATION, COMPLETE }
   State public currState;
-  address payable public customer;
-  address payable public service;
-  address payable public validator;
-  uint public commission;
-  uint public serviceResult;
+  address payable customer;
+  address payable service;
+  address payable validator;
+  uint public commission = 10;
+  uint serviceResult;
   uint public validator_reward;
   uint constant reward_divisor = 10;
 
   event Deposited(address indexed payee, uint256 weiAmount);
-
-  modifier onlyCustomer() {
-    require(msg.sender == customer, "Only customer can call this method");
-    _;
-  }
 
   modifier onlyService() {
     require(msg.sender == service, "Only service can call this method");
@@ -29,16 +24,19 @@ contract YandaEscrow {
     _;
   }
 
-  constructor(address payable _customer, address payable _service, uint _commission) public {
-    customer = _customer;
+  constructor(address payable _service) public {
     service = _service;
-    commission = _commission;
   }
 
-  receive() onlyCustomer external payable {
+  receive() external payable {
     require(currState == State.AWAITING_PAYMENT, "Already paid");
+    customer = msg.sender;
     currState = State.AWAITING_DELIVERY;
     emit Deposited(msg.sender, msg.value);
+  }
+
+  function setCommission(uint _commission) onlyService external {
+    commission = _commission;
   }
 
   function random(uint max) private view returns (uint8) {
@@ -72,6 +70,10 @@ contract YandaEscrow {
 
   function getState() public view returns (State) {
     return currState;
+  }
+
+  function getComission() public view returns (uint) {
+    return commission;
   }
 
   function getValidator() public view returns (address) {
