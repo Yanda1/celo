@@ -9,41 +9,45 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
 
 
 contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
-    enum State { AWAITING_PAYMENT, AWAITING_DELIVERY, AWAITING_VALIDATION }
+    enum State { AWAITING_TRANSFER, AWAITING_TERMINATION, AWAITING_VALIDATION }
     struct Process {
         State state;
-        uint bill;
+        uint cost;
         address service;
         string productId;
         uint validations;
         uint failedValidations;
-        uint256 onBalance;
     }
     struct Service {
         address[] validators;
         uint validationShare;
         uint commissionShare;
-        // The rest will burn
     }
     mapping(address => Process) public processes;
     mapping(address => Service) public services;
     mapping(address => bool) public validators;
 
-    event Deposited(
+    event Deposit(
         address indexed customer,
         address indexed service,
         string indexed productId,
         uint256 weiAmount
     );
-    event Delivered(
+    event Action(
         address indexed customer,
         address indexed service,
-        string indexed productId
+        string indexed productId,
+        string data
     );
-    event Completed(
+    event Terminate(
+        address indexed customer,
+        address indexed service,
+        string productId
+    );
+    event Complete(
         address indexed customer,
         address indexed service, 
-        string indexed productId,
+        string productId,
         bool success
     );
 
@@ -105,20 +109,24 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
     }
     
     function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
-        _transfer(_msgSender(), recipient, amount);
-
         if(recipient == address(this)) {
-            require(processes[_msgSender()].state == State.AWAITING_PAYMENT, "Already paid");
-            require(processes[_msgSender()].bill == amount, "Invalid amount");
-            processes[_msgSender()].state = State.AWAITING_DELIVERY;
-            emit Deposited(
+            require(
+                processes[msg.sender].state == State.AWAITING_TRANSFER,
+                "You have another active process, please finish it first"
+            );
+
+            _transfer(_msgSender(), recipient, amount);
+            processes[msg.sender].state = State.AWAITING_TERMINATION;
+
+            emit Deposit(
                 _msgSender(),
-                processes[_msgSender()].service,
-                processes[_msgSender()].productId,
+                processes[msg.sender].service,
+                processes[msg.sender].productId,
                 amount
             );
+        } else {
+            _transfer(_msgSender(), recipient, amount);
         }
-
         return true;
     }
 
@@ -147,29 +155,34 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         _updateValidatorsMapping(vList);
     }
 
-    function addProcess(address customer, uint256 bill, string calldata productId)
-        public
-        onlyService
+    function createProcess(address service, uint256 amount, string calldata productId)
+        public returns(bool)
     {
-        processes[customer] = Process({
-            state: State.AWAITING_PAYMENT,
-            bill: bill,
-            service: msg.sender,
-            productId: productId,
-            validations: 0,
-            failedValidations: 0,
-            onBalance: 0
-        });
+        if(services[service].validationShare > 0) {
+            processes[msg.sender] = Process({
+                state: State.AWAITING_TRANSFER,
+                cost: amount,
+                service: service,
+                productId: productId,
+                validations: 0,
+                failedValidations: 0
+            });
+            return true;
+        } else {
+            return false;
+        }
     }
 
-    function getProcess(address customer) public view returns(Process memory) {
-        return processes[customer];
+    function declareAction(address customer, string calldata productId, string calldata data)
+        public onlyService
+    {
+        emit Action(customer, msg.sender, productId, data);
     }
 
-    function confirmDelivery(address customer) public onlyService {
-        require(processes[customer].state == State.AWAITING_DELIVERY, "Cannot confirm delivery");
+    function startTermination(address customer) public onlyService {
+        require(processes[customer].state == State.AWAITING_TERMINATION, "Cannot start termination");
         processes[customer].state = State.AWAITING_VALIDATION;
-        emit Delivered(customer, msg.sender, processes[customer].productId);
+        emit Terminate(customer, msg.sender, processes[customer].productId);
     }
 
     function _rewardValidators(Service memory service, uint256 amount) internal returns(uint256) {
@@ -183,7 +196,7 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         return rewards_sum;
     }
 
-    function validateDelivery(address customer, bool passed) public onlyValidator {
+    function validateTermination(address customer, bool passed) public onlyValidator {
         require(processes[customer].state == State.AWAITING_VALIDATION, "Cannot validate delivary");
         
         if(passed) {
@@ -194,24 +207,24 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
 
         if(processes[customer].validations > services[processes[customer].service].validators.length / 2) {
             // Reward validators
-            uint256 reward_amount = processes[customer].bill / services[processes[customer].service].validationShare;
+            uint256 reward_amount = processes[customer].cost / services[processes[customer].service].validationShare;
             uint256 executed_amount = _rewardValidators(services[processes[customer].service], reward_amount);
             // Pay service commission
-            uint256 commission_amount = processes[customer].bill / services[processes[customer].service].commissionShare;
+            uint256 commission_amount = processes[customer].cost / services[processes[customer].service].commissionShare;
             this.transfer(payable(processes[customer].service), commission_amount);
             // Burn remaining funds
-            _burn(address(this), processes[customer].bill - executed_amount - commission_amount);
-            emit Completed(customer, processes[customer].service, processes[customer].productId, true);
+            _burn(address(this), processes[customer].cost - executed_amount - commission_amount);
+            emit Complete(customer, processes[customer].service, processes[customer].productId, true);
             // Delete completed process
             delete processes[customer];
         } else {
             if(processes[customer].failedValidations >= services[processes[customer].service].validators.length / 2) {
                 // Reward validators
-                uint256 reward_amount = processes[customer].bill / services[processes[customer].service].validationShare;
+                uint256 reward_amount = processes[customer].cost / services[processes[customer].service].validationShare;
                 uint256 executed_amount = _rewardValidators(services[processes[customer].service], reward_amount);
                 // Make refund
-                this.transfer(payable(customer), processes[customer].bill - executed_amount);
-                emit Completed(customer, processes[customer].service, processes[customer].productId, false);
+                this.transfer(payable(customer), processes[customer].cost - executed_amount);
+                emit Complete(customer, processes[customer].service, processes[customer].productId, false);
                 // Delete completed process
                 delete processes[customer];
             }
