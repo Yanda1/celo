@@ -15,6 +15,7 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         uint cost;
         address service;
         string productId;
+        string productData;
         uint validations;
         uint failedValidations;
     }
@@ -155,7 +156,7 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         _updateValidatorsMapping(vList);
     }
 
-    function createProcess(address service, uint256 amount, string calldata productId)
+    function createProcess(address service, uint256 amount, string calldata productId, string calldata data)
         public returns(bool)
     {
         if(services[service].validationShare > 0) {
@@ -164,6 +165,7 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
                 cost: amount,
                 service: service,
                 productId: productId,
+                productData: data,
                 validations: 0,
                 failedValidations: 0
             });
