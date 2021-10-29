@@ -3,7 +3,7 @@ attrs==20.1.0
 autopep8==1.5.4
 base58==2.0.1
 bitarray==1.2.2
-celo-sdk==1.0.0
+-e git+https://github.com/blaize-tech/celo-sdk-py.git#egg=celo_sdk
 certifi==2020.6.20
 chardet==3.0.4
 cmake==3.18.2.post1

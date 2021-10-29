@@ -9,7 +9,7 @@ from decimal import Decimal
 from celo_sdk.kit import Kit
 
 NETWORK = "https://alfajores-forno.celo-testnet.org"
-CONTRACT_ADDR = "0x2E86B9d8Dd4Aa8228747Dc3A8f7bF6538a300d87"
+CONTRACT_ADDR = "0xeF84aF1665e848045e3E3611444B4ee1B3daaa8e"
 CONTRACT_ABI = "YandaToken.json"
 REFRESH_INTERVAL = 1
 stopFlag = Event()
@@ -52,22 +52,31 @@ class EventWatcher(Thread):
         self.latest_block = None
 
     def handle_event(self, event):
-        print('New event: ', event)
+        print('\tNew event: ', event)
         active_account = self.kit.wallet.active_account.address
-        transaction = self.contract.functions.validateTermination(
-            event['args']['customer'],
-            True
-        ).buildTransaction({
-            'gas': 250000,
-            'gasPrice': self.kit.w3.toWei(Decimal('1'), 'gwei'),
-            'from': active_account,
-            'nonce': self.kit.w3.eth.getTransactionCount(active_account)
-        })
-        signed_txn = self.kit.w3.eth.account.signTransaction(
-            transaction,
-            private_key=self.private_key
-        )
-        self.kit.w3.eth.sendRawTransaction(signed_txn.rawTransaction)
+        # Check that account address is in the validators list
+        has_permission = self.contract.functions.validators(active_account).call()
+
+        if has_permission:
+            is_valid = True
+            print(f'\tValidated with "{is_valid}"')
+            transaction = self.contract.functions.validateTermination(
+                event['args']['customer'],
+                event['args']['productId'],
+                is_valid
+            ).buildTransaction({
+                'gas': 250000,
+                'gasPrice': self.kit.w3.toWei(Decimal('1'), 'gwei'),
+                'from': active_account,
+                'nonce': self.kit.w3.eth.getTransactionCount(active_account)
+            })
+            signed_txn = self.kit.w3.eth.account.signTransaction(
+                transaction,
+                private_key=self.private_key
+            )
+            self.kit.w3.eth.sendRawTransaction(signed_txn.rawTransaction)
+        else:
+            print('\tYour account address is not permitted to validate.')
 
     def run(self):
         terminate = self.contract.events.Terminate
@@ -85,10 +94,11 @@ class EventWatcher(Thread):
 
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, exit_handler)
-    if len(sys.argv) == 1:
-        print('\tPrivate key is required for running the validator app, run: '
-              'python validator.py <your-key-here>')
+    private_key = os.getenv('PRIVATE_KEY', None)
+    if private_key is None:
+        print('\tPrivate key is required in order to start validator app, '
+              'please add "PRIVATE_KEY" environment variable.')
         sys.exit()
-    watch = EventWatcher(sys.argv[1], stopFlag)
+    watch = EventWatcher(private_key, stopFlag)
     watch.start()
     print('Validator started and waiting for events...')

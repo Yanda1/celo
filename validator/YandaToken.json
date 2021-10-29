@@ -22,9 +22,9 @@
 				},
 				{
 					"indexed": true,
-					"internalType": "string",
+					"internalType": "bytes32",
 					"name": "productId",
-					"type": "string"
+					"type": "bytes32"
 				},
 				{
 					"indexed": false,
@@ -77,10 +77,10 @@
 					"type": "address"
 				},
 				{
-					"indexed": false,
-					"internalType": "string",
+					"indexed": true,
+					"internalType": "bytes32",
 					"name": "productId",
-					"type": "string"
+					"type": "bytes32"
 				},
 				{
 					"indexed": false,
@@ -159,9 +159,9 @@
 				},
 				{
 					"indexed": true,
-					"internalType": "string",
+					"internalType": "bytes32",
 					"name": "productId",
-					"type": "string"
+					"type": "bytes32"
 				},
 				{
 					"indexed": false,
@@ -221,10 +221,10 @@
 					"type": "address"
 				},
 				{
-					"indexed": false,
-					"internalType": "string",
+					"indexed": true,
+					"internalType": "bytes32",
 					"name": "productId",
-					"type": "string"
+					"type": "bytes32"
 				}
 			],
 			"name": "Terminate",
@@ -425,9 +425,9 @@
 					"type": "uint256"
 				},
 				{
-					"internalType": "string",
+					"internalType": "bytes32",
 					"name": "productId",
-					"type": "string"
+					"type": "bytes32"
 				},
 				{
 					"internalType": "string",
@@ -436,13 +436,7 @@
 				}
 			],
 			"name": "createProcess",
-			"outputs": [
-				{
-					"internalType": "bool",
-					"name": "",
-					"type": "bool"
-				}
-			],
+			"outputs": [],
 			"stateMutability": "nonpayable",
 			"type": "function"
 		},
@@ -467,9 +461,9 @@
 					"type": "address"
 				},
 				{
-					"internalType": "string",
+					"internalType": "bytes32",
 					"name": "productId",
-					"type": "string"
+					"type": "bytes32"
 				},
 				{
 					"internalType": "string",
@@ -571,6 +565,25 @@
 					"internalType": "address",
 					"name": "",
 					"type": "address"
+				}
+			],
+			"stateMutability": "view",
+			"type": "function"
+		},
+		{
+			"inputs": [
+				{
+					"internalType": "address",
+					"name": "",
+					"type": "address"
+				}
+			],
+			"name": "depositingProducts",
+			"outputs": [
+				{
+					"internalType": "bytes32",
+					"name": "",
+					"type": "bytes32"
 				}
 			],
 			"stateMutability": "view",
@@ -813,6 +826,11 @@
 					"internalType": "address",
 					"name": "",
 					"type": "address"
+				},
+				{
+					"internalType": "bytes32",
+					"name": "",
+					"type": "bytes32"
 				}
 			],
 			"name": "processes",
@@ -833,9 +851,9 @@
 					"type": "address"
 				},
 				{
-					"internalType": "string",
+					"internalType": "bytes32",
 					"name": "productId",
-					"type": "string"
+					"type": "bytes32"
 				},
 				{
 					"internalType": "string",
@@ -906,6 +924,11 @@
 					"internalType": "address",
 					"name": "customer",
 					"type": "address"
+				},
+				{
+					"internalType": "bytes32",
+					"name": "productId",
+					"type": "bytes32"
 				}
 			],
 			"name": "startTermination",
@@ -1020,6 +1043,11 @@
 					"type": "address"
 				},
 				{
+					"internalType": "bytes32",
+					"name": "productId",
+					"type": "bytes32"
+				},
+				{
 					"internalType": "bool",
 					"name": "passed",
 					"type": "bool"
@@ -1041,9 +1069,14 @@
 			"name": "validators",
 			"outputs": [
 				{
-					"internalType": "bool",
-					"name": "",
-					"type": "bool"
+					"internalType": "uint256",
+					"name": "requests",
+					"type": "uint256"
+				},
+				{
+					"internalType": "uint256",
+					"name": "validations",
+					"type": "uint256"
 				}
 			],
 			"stateMutability": "view",
