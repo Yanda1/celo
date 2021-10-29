@@ -9,12 +9,12 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
 
 
 contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
-    enum State { AWAITING_TRANSFER, AWAITING_TERMINATION, AWAITING_VALIDATION }
+    enum State { AWAITING_TRANSFER, AWAITING_TERMINATION, AWAITING_VALIDATION, COMPLETED }
     struct Process {
         State state;
         uint cost;
         address service;
-        string productId;
+        bytes32 productId;
         string productData;
         uint validations;
         uint failedValidations;
@@ -24,31 +24,36 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         uint validationShare;
         uint commissionShare;
     }
-    mapping(address => Process) public processes;
+    struct Validator {
+        uint requests;
+        uint validations;
+    }
+    mapping(address => mapping(bytes32 => Process)) public processes;
+    mapping(address => bytes32) public depositingProducts;
     mapping(address => Service) public services;
-    mapping(address => bool) public validators;
+    mapping(address => Validator) public validators;
 
     event Deposit(
         address indexed customer,
         address indexed service,
-        string indexed productId,
+        bytes32 indexed productId,
         uint256 weiAmount
     );
     event Action(
         address indexed customer,
         address indexed service,
-        string indexed productId,
+        bytes32 indexed productId,
         string data
     );
     event Terminate(
         address indexed customer,
         address indexed service,
-        string productId
+        bytes32 indexed productId
     );
     event Complete(
         address indexed customer,
         address indexed service, 
-        string productId,
+        bytes32 indexed productId,
         bool success
     );
 
@@ -58,7 +63,7 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
     }
 
     modifier onlyValidator() {
-        require(validators[msg.sender] == true, "Only validator can call this method");
+        require(validators[msg.sender].requests > 0, "Only validator can call this method");
         _;
     }
 
@@ -112,31 +117,23 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
     function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
         if(recipient == address(this)) {
             require(
-                processes[msg.sender].state == State.AWAITING_TRANSFER,
-                "You have another active process, please finish it first"
+                processes[msg.sender][depositingProducts[msg.sender]].state == State.AWAITING_TRANSFER,
+                "You don't have a deposit awaiting process, please create it first"
             );
 
             _transfer(_msgSender(), recipient, amount);
-            processes[msg.sender].state = State.AWAITING_TERMINATION;
+            processes[msg.sender][depositingProducts[msg.sender]].state = State.AWAITING_TERMINATION;
 
             emit Deposit(
                 _msgSender(),
-                processes[msg.sender].service,
-                processes[msg.sender].productId,
+                processes[msg.sender][depositingProducts[msg.sender]].service,
+                processes[msg.sender][depositingProducts[msg.sender]].productId,
                 amount
             );
         } else {
             _transfer(_msgSender(), recipient, amount);
         }
         return true;
-    }
-
-    function _updateValidatorsMapping(address[] calldata new_validators) internal {
-        for(uint i=0; i < new_validators.length; i++) {
-            if(!validators[new_validators[i]]) {
-                validators[new_validators[i]] = true;
-            }
-        }
     }
 
     function addService(address service, address[] calldata vList, uint vShare, uint cShare)
@@ -148,87 +145,123 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
             validationShare: vShare,
             commissionShare: cShare
         });
-        _updateValidatorsMapping(vList);
     }
 
     function setValidators(address[] calldata vList) public onlyService {
         services[msg.sender].validators = vList;
-        _updateValidatorsMapping(vList);
     }
 
-    function createProcess(address service, uint256 amount, string calldata productId, string calldata data)
-        public returns(bool)
-    {
-        if(services[service].validationShare > 0) {
-            processes[msg.sender] = Process({
-                state: State.AWAITING_TRANSFER,
-                cost: amount,
-                service: service,
-                productId: productId,
-                productData: data,
-                validations: 0,
-                failedValidations: 0
-            });
-            return true;
-        } else {
-            return false;
+    function createProcess(address service, uint256 amount, bytes32 productId, string calldata data) public {
+        require(services[service].validationShare > 0, 'Requested service address not found');
+        require(processes[msg.sender][productId].service == address(0), 'Process with specified productId already exist');
+
+        processes[msg.sender][productId] = Process({
+            state: State.AWAITING_TRANSFER,
+            cost: amount,
+            service: service,
+            productId: productId,
+            productData: data,
+            validations: 0,
+            failedValidations: 0
+        });
+        if(depositingProducts[msg.sender].length > 0) {
+            // Delete previous product if still waits for a deposit
+            if(processes[msg.sender][depositingProducts[msg.sender]].state == State.AWAITING_TRANSFER) {
+                delete processes[msg.sender][depositingProducts[msg.sender]];
+            }
         }
+        depositingProducts[msg.sender] = productId;
     }
 
-    function declareAction(address customer, string calldata productId, string calldata data)
+    function declareAction(address customer, bytes32 productId, string calldata data)
         public onlyService
     {
         emit Action(customer, msg.sender, productId, data);
     }
 
-    function startTermination(address customer) public onlyService {
-        require(processes[customer].state == State.AWAITING_TERMINATION, "Cannot start termination");
-        processes[customer].state = State.AWAITING_VALIDATION;
-        emit Terminate(customer, msg.sender, processes[customer].productId);
+    function _updateValidatorsScore(Service memory service) internal {
+        for(uint i=0; i < service.validators.length; i++) { 
+            validators[service.validators[i]].requests += 1;
+        }
+    }
+
+    function startTermination(address customer, bytes32 productId) public onlyService {
+        require(processes[customer][productId].state == State.AWAITING_TERMINATION, "Cannot start termination");
+        processes[customer][productId].state = State.AWAITING_VALIDATION;
+        // Update validators requests score
+        _updateValidatorsScore(services[processes[customer][productId].service]);
+        // Emit Terminate event to trigger validators
+        emit Terminate(customer, msg.sender, productId);
+    }
+
+    function _validatorsHolding(Service memory service) view internal returns(uint256) {
+        uint256 result = 0;
+        for(uint i=0; i < service.validators.length; i++) { 
+            result += this.balanceOf(service.validators[i]);
+        }
+        return result;
+    }
+
+    function _scoredReward(address validator, uint256 reward) view internal returns(uint256) {
+        uint256 score = (validators[validator].validations * 100) /  validators[validator].requests;
+        return (reward * score) / 100;
     }
 
     function _rewardValidators(Service memory service, uint256 amount) internal returns(uint256) {
         uint256 rewards_sum = 0;
-        uint256 reward = amount / service.validators.length;
+        // Sum of validators YND token balances
+        uint256 holdings = _validatorsHolding(service);
 
         for(uint i=0; i < service.validators.length; i++) {
-            this.transfer(payable(service.validators[i]), reward);
-            rewards_sum += reward;
+            uint256 validator_balance = this.balanceOf(service.validators[i]);
+            if(validator_balance > 0) {
+                uint256 reward = amount / (holdings / validator_balance);
+                // Reward after scoring filter
+                uint256 scored_reward = _scoredReward(service.validators[i], reward);
+                if(scored_reward > 0) {
+                    this.transfer(payable(service.validators[i]), scored_reward);
+                    rewards_sum += scored_reward;
+                }
+            }
         }
         return rewards_sum;
     }
 
-    function validateTermination(address customer, bool passed) public onlyValidator {
-        require(processes[customer].state == State.AWAITING_VALIDATION, "Cannot validate delivary");
+    function validateTermination(address customer, bytes32 productId, bool passed) public onlyValidator {
+        require(processes[customer][productId].state >= State.AWAITING_VALIDATION, "Cannot validate delivary");
         
         if(passed) {
-            processes[customer].validations += 1;
+            processes[customer][productId].validations += 1;
         } else {
-            processes[customer].failedValidations += 1;
+            processes[customer][productId].failedValidations += 1;
         }
+        // Update validator score
+        validators[msg.sender].validations += 1;
 
-        if(processes[customer].validations > services[processes[customer].service].validators.length / 2) {
-            // Reward validators
-            uint256 reward_amount = processes[customer].cost / services[processes[customer].service].validationShare;
-            uint256 executed_amount = _rewardValidators(services[processes[customer].service], reward_amount);
-            // Pay service commission
-            uint256 commission_amount = processes[customer].cost / services[processes[customer].service].commissionShare;
-            this.transfer(payable(processes[customer].service), commission_amount);
-            // Burn remaining funds
-            _burn(address(this), processes[customer].cost - executed_amount - commission_amount);
-            emit Complete(customer, processes[customer].service, processes[customer].productId, true);
-            // Delete completed process
-            delete processes[customer];
-        } else {
-            if(processes[customer].failedValidations >= services[processes[customer].service].validators.length / 2) {
+        if(processes[customer][productId].state == State.AWAITING_VALIDATION) {
+            if(processes[customer][productId].validations > services[processes[customer][productId].service].validators.length / 2) {
+                // Update process state to COMPLETED
+                processes[customer][productId].state = State.COMPLETED;
                 // Reward validators
-                uint256 reward_amount = processes[customer].cost / services[processes[customer].service].validationShare;
-                uint256 executed_amount = _rewardValidators(services[processes[customer].service], reward_amount);
-                // Make refund
-                this.transfer(payable(customer), processes[customer].cost - executed_amount);
-                emit Complete(customer, processes[customer].service, processes[customer].productId, false);
-                // Delete completed process
-                delete processes[customer];
+                uint256 reward_amount = processes[customer][productId].cost / services[processes[customer][productId].service].validationShare;
+                uint256 executed_amount = _rewardValidators(services[processes[customer][productId].service], reward_amount);
+                // Pay service commission
+                uint256 commission_amount = processes[customer][productId].cost / services[processes[customer][productId].service].commissionShare;
+                this.transfer(payable(processes[customer][productId].service), commission_amount);
+                // Burn remaining funds
+                _burn(address(this), processes[customer][productId].cost - executed_amount - commission_amount);
+                emit Complete(customer, processes[customer][productId].service, productId, true);
+            } else {
+                if(processes[customer][productId].failedValidations >= services[processes[customer][productId].service].validators.length / 2) {
+                    // Update process state to COMPLETED
+                    processes[customer][productId].state = State.COMPLETED;
+                    // Reward validators
+                    uint256 reward_amount = processes[customer][productId].cost / services[processes[customer][productId].service].validationShare;
+                    uint256 executed_amount = _rewardValidators(services[processes[customer][productId].service], reward_amount);
+                    // Make refund
+                    this.transfer(payable(customer), processes[customer][productId].cost - executed_amount);
+                    emit Complete(customer, processes[customer][productId].service, productId, false);
+                }
             }
         }
     }
