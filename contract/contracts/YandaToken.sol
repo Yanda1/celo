@@ -21,8 +21,9 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
     }
     struct Service {
         address[] validators;
-        uint validationShare;
-        uint commissionShare;
+        uint validationPerc;
+        uint commissionPerc;
+        uint validatorVersion;
     }
     struct Validator {
         uint requests;
@@ -58,7 +59,7 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
     );
 
     modifier onlyService() {
-        require(services[msg.sender].validationShare > 0, "Only service can call this method");
+        require(services[msg.sender].validationPerc > 0, "Only service can call this method");
         _;
     }
 
@@ -68,7 +69,7 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
     }
 
     constructor() ERC20("YandaToken", "YND") ERC20Permit("YandaToken") {
-        _mint(msg.sender, 100000 * 10 ** decimals());
+        _mint(msg.sender, 10000000 * 10 ** decimals());
     }
 
     function pause() public onlyOwner {
@@ -136,14 +137,15 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         return true;
     }
 
-    function addService(address service, address[] calldata vList, uint vShare, uint cShare)
+    function addService(address service, address[] calldata vList, uint vPerc, uint cPerc, uint vVer)
         public
         onlyOwner
     {
         services[service] = Service({
             validators: vList,
-            validationShare: vShare,
-            commissionShare: cShare
+            validationPerc: vPerc,
+            commissionPerc: cPerc,
+            validatorVersion: vVer
         });
     }
 
@@ -151,8 +153,12 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         services[msg.sender].validators = vList;
     }
 
+    function setValidatorVer(uint vVer) public onlyService {
+        services[msg.sender].validatorVersion = vVer;
+    }
+
     function createProcess(address service, uint256 amount, bytes32 productId, string calldata data) public {
-        require(services[service].validationShare > 0, 'Requested service address not found');
+        require(services[service].validationPerc > 0, 'Requested service address not found');
         require(processes[msg.sender][productId].service == address(0), 'Process with specified productId already exist');
 
         processes[msg.sender][productId] = Process({
@@ -203,7 +209,7 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
     }
 
     function _scoredReward(address validator, uint256 reward) view internal returns(uint256) {
-        uint256 score = (validators[validator].validations * 100) /  validators[validator].requests;
+        uint256 score = (validators[validator].validations * 100) / validators[validator].requests;
         return (reward * score) / 100;
     }
 
@@ -243,10 +249,10 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
                 // Update process state to COMPLETED
                 processes[customer][productId].state = State.COMPLETED;
                 // Reward validators
-                uint256 reward_amount = processes[customer][productId].cost / services[processes[customer][productId].service].validationShare;
+                uint256 reward_amount = (processes[customer][productId].cost * services[processes[customer][productId].service].validationPerc) / 100;
                 uint256 executed_amount = _rewardValidators(services[processes[customer][productId].service], reward_amount);
                 // Pay service commission
-                uint256 commission_amount = processes[customer][productId].cost / services[processes[customer][productId].service].commissionShare;
+                uint256 commission_amount = (processes[customer][productId].cost * services[processes[customer][productId].service].commissionPerc) / 100;
                 this.transfer(payable(processes[customer][productId].service), commission_amount);
                 // Burn remaining funds
                 _burn(address(this), processes[customer][productId].cost - executed_amount - commission_amount);
@@ -256,13 +262,22 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
                     // Update process state to COMPLETED
                     processes[customer][productId].state = State.COMPLETED;
                     // Reward validators
-                    uint256 reward_amount = processes[customer][productId].cost / services[processes[customer][productId].service].validationShare;
+                    uint256 reward_amount = (processes[customer][productId].cost * services[processes[customer][productId].service].validationPerc) / 100;
                     uint256 executed_amount = _rewardValidators(services[processes[customer][productId].service], reward_amount);
                     // Make refund
                     this.transfer(payable(customer), processes[customer][productId].cost - executed_amount);
                     emit Complete(customer, processes[customer][productId].service, productId, false);
                 }
             }
+        }
+    }
+
+    function claimToken(uint256 amount) public returns (bool) {
+        if(this.balanceOf(msg.sender) < 20 ether && amount < 100 ether) {
+            _transfer(this.owner(), _msgSender(), amount);
+            return true;
+        } else {
+            return false;
         }
     }
 
