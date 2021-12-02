@@ -4,14 +4,18 @@ import signal
 from threading import Thread, Event
 import json
 import time
-from decimal import Decimal
+import math
+from decimal import Decimal, ROUND_DOWN
 
+import requests
 from celo_sdk.kit import Kit
 
-NETWORK = "https://alfajores-forno.celo-testnet.org"
-CONTRACT_ADDR = "0xeF84aF1665e848045e3E3611444B4ee1B3daaa8e"
-CONTRACT_ABI = "YandaToken.json"
-REFRESH_INTERVAL = 1
+from constants import (
+    NETWORK, CONTRACT_ADDR, CONTRACT_ABI, SERVICE_ADDR, REFRESH_INTERVAL, RESTART_THRESHOLD,
+    VERSION, BINANCE_PAIRS_URL,
+    Side, Purpose,
+)
+
 stopFlag = Event()
 
 
@@ -51,14 +55,155 @@ class EventWatcher(Thread):
         self.stopped = stop
         self.latest_block = None
 
+    @staticmethod
+    def deserialize_order(order_str):
+        order_dict = json.loads(order_str)
+        result = {
+            'id': order_dict['id'],
+            'price': Decimal(order_dict['p']),
+            'size_sent': Decimal(order_dict['ss']),
+            'size_received': Decimal(order_dict['sr']),
+            'side': order_dict['sd'],
+            'status': order_dict['st'],
+            'purpose': order_dict['pr'],
+            'order_type': order_dict['ot'],
+            'update_time': order_dict['ut'],
+        }
+        return result
+
+    def get_pair(self, pair_name):
+        data = None
+        try:
+            response = requests.get(url=BINANCE_PAIRS_URL, params={'symbol': pair_name})
+            if response.status_code == 200:
+                data = response.json()['symbols'][0]
+            else:
+                response.raise_for_status()
+        except requests.exceptions.RequestException:
+            print('Get pair failed, retrying...')
+            time.sleep(2)
+            return self.get_pair(pair_name)
+
+        return data
+
+    @staticmethod
+    def get_decimal_precision(decimal_var):
+        if type(decimal_var) is not Decimal:
+            raise TypeError('First argument must be a Decimal type object.')
+
+        max_precision = int(math.fabs(decimal_var.as_tuple().exponent))
+        for x in range(0, max_precision + 1):
+            tail, integer = math.modf(decimal_var * 10 ** x)
+            if tail == 0.0:
+                return x
+
+    @staticmethod
+    def round_down(number, decimals=0):
+        number_str = str(number)
+        rounded_decimal = Decimal(number_str).quantize(
+            Decimal((0, (1,), -decimals)),
+            rounding=ROUND_DOWN
+        )
+        return rounded_decimal
+
+    @staticmethod
+    def find_oposit_order(order, prev_orders):
+        result = prev_orders[0]
+
+        for idx in range(len(prev_orders)-1, -1, -1):
+            if prev_orders[idx]['purpose'] == Purpose.RESTART:
+                result = prev_orders[idx]
+                break
+            elif order['side'] == Side.BUY and prev_orders[idx]['side'] == Side.SELL:
+                digits = abs(prev_orders[idx]['size_sent'].as_tuple().exponent)
+                if self.round_down(order['size_sent'], digits) == prev_orders[idx]['size_sent']:
+                    result = prev_orders[idx]
+                    break
+            elif order['side'] == Side.SELL and prev_orders[idx]['side'] == Side.BUY:
+                digits = abs(order['size_sent'].as_tuple().exponent)
+                if self.round_down(prev_orders[idx]['size_sent'], digits) == order[idx]['size_sent']:
+                    result = prev_orders[idx]
+                    break
+
+        return result
+
+    def validate_bot(self, customer_address, bot_id):
+        process = self.contract.functions.processes(
+            customer_address,
+            bot_id
+        ).call()
+        print('Process: ', process)
+        bot = json.loads(process[4])
+        print('Bot: ', bot)
+        actions = self.contract.events.Action.getLogs(
+            fromBlock=0,
+            argument_filters={'productId': bot_id}
+        )
+        if len(actions) == 0:
+            # Refund if bot made 0 filled orders
+            return False
+
+        pair_data = self.get_pair(bot['p'])
+        size_precision = self.get_decimal_precision(Decimal(pair_data['filters'][2]['stepSize']))
+        price_precision = self.get_decimal_precision(Decimal(pair_data['filters'][0]['tickSize']))
+
+        result = True
+        orders = []
+        for action in actions:
+            order = self.deserialize_order(action['args']['data'])
+            if order['purpose'] == Purpose.CONTINUE:
+                # If order purpose is CONTINUE
+                if len(orders) < 3:
+                    oposit_order = orders[0]
+                else:
+                    oposit_order = self.find_oposit_order(order, orders)
+
+                oposit_size_sent = self.round_down(oposit_order['size_received'], size_precision) \
+                    / oposit_order['price']
+                oposit_size_received = self.round_down(oposit_order['size_sent'], size_precision) \
+                    * oposit_order['price']
+
+                if(order['side'] == Side.BUY and
+                   order['size_sent'] < oposit_size_sent):
+                    # If we bought less than in the previous SELL order, invalid
+                    result = False
+                    print('we bought less than in the previous SELL order, invalid')
+                elif(order['side'] == Side.SELL and
+                     order['size_received'] < oposit_size_received):
+                    # If on SELL we received less quote than in the previous BUY order, invalid
+                    result = False
+                    print('on SELL we received less quote than in the previous BUY order, invalid')
+            elif order['purpose'] == Purpose.RESTART:
+                previous_order = orders[-1]
+                price_deviation = 0
+                if order['side'] == Side.BUY:
+                    price_deviation = abs(
+                        (abs(order['price'] - previous_order['price']) / previous_order['price'])
+                        - bot['rq']
+                    )
+                else:
+                    price_deviation = abs(
+                        (abs(order['price'] - previous_order['price']) / previous_order['price'])
+                        - bot['rb']
+                    )
+
+                if price_deviation > RESTART_THRESHOLD:
+                    result = False
+
+            orders.append(order)
+
+        return result
+
     def handle_event(self, event):
         print('\tNew event: ', event)
         active_account = self.kit.wallet.active_account.address
-        # Check that account address is in the validators list
-        has_permission = self.contract.functions.validators(active_account).call()
+        # Is this validator address ever requested to validate?
+        validation_requests = self.contract.functions.validators(active_account).call()[0]
+        # Get required version for validating current service
+        reqired_version = self.contract.functions.services(SERVICE_ADDR).call()['validatorVersion']
 
-        if has_permission:
-            is_valid = True
+        if validation_requests > 0 and reqired_version <= VERSION:
+            is_valid = self.validate_bot(event['args']['customer'], event['args']['productId'])
             print(f'\tValidated with "{is_valid}"')
             transaction = self.contract.functions.validateTermination(
                 event['args']['customer'],
@@ -101,4 +246,4 @@ if __name__ == '__main__':
         sys.exit()
     watch = EventWatcher(private_key, stopFlag)
     watch.start()
-    print('Validator started and waiting for events...')
+    print(f'Validator({VERSION}) started and waiting for events...')
