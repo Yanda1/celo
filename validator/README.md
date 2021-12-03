@@ -2,16 +2,20 @@
 
 This app is made for validation purposes to satisfy the Yanda defi ecosystem.
 
-### App start
+### Env variables:
 
-Open your favorite Terminal and run these commands.
+- PRIVATE_KEY (required) - your wallet private key on Alfajores Testnet account
 
-1. Install dependencies:
+### App start:
+
+Open your favorite Terminal and run these commands:
+
+1. Build docker image:
 ```sh
-> pip install -r requirements.txt
+> docker build -t dev-validator:latest .
 ```
 
 2. Start app with python:
 ```sh
-> python3 validator.py <validator-private-key>
+> docker run --env PRIVATE_KEY=<your-private-key> dev-validator
 ```
