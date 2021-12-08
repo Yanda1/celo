@@ -7,7 +7,7 @@ CONTRACT_ABI = "YandaToken.json"
 SERVICE_ADDR = "0xeB56c1d19855cc0346f437028e6ad09C80128e02"
 REFRESH_INTERVAL = 1
 RESTART_THRESHOLD = Decimal('1.0')
-VERSION = 4     # 0.1.15 == 115 , 0.1.4 == 104
+VERSION = 5     # 0.1.15 == 115 , 0.1.4 == 104
 BINANCE_PAIRS_URL = 'https://api.binance.com/api/v3/exchangeInfo'
 
 

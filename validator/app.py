@@ -132,9 +132,9 @@ class EventWatcher(Thread):
             customer_address,
             bot_id
         ).call()
-        print('Process: ', process)
+        print('\tProcess: ', process)
         bot = json.loads(process[4])
-        print('Bot: ', bot)
+        print('\tBot: ', bot)
         actions = self.contract.events.Action.getLogs(
             fromBlock=0,
             argument_filters={'productId': bot_id}
@@ -145,7 +145,6 @@ class EventWatcher(Thread):
 
         pair_data = self.get_pair(bot['p'])
         size_precision = self.get_decimal_precision(Decimal(pair_data['filters'][2]['stepSize']))
-        price_precision = self.get_decimal_precision(Decimal(pair_data['filters'][0]['tickSize']))
 
         result = True
         orders = []
@@ -195,12 +194,12 @@ class EventWatcher(Thread):
         return result
 
     def handle_event(self, event):
-        print('\tNew event: ', event)
+        print('New event: ', event)
         active_account = self.kit.wallet.active_account.address
         # Is this validator address ever requested to validate?
         validation_requests = self.contract.functions.validators(active_account).call()[0]
         # Get required version for validating current service
-        reqired_version = self.contract.functions.services(SERVICE_ADDR).call()['validatorVersion']
+        reqired_version = self.contract.functions.services(SERVICE_ADDR).call()[2]
 
         if validation_requests > 0 and reqired_version <= VERSION:
             is_valid = self.validate_bot(event['args']['customer'], event['args']['productId'])
