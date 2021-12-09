@@ -2,23 +2,26 @@
 
 ### Runing on local
 
-Open your favorite Terminal and run these commands.
+Open your favorite terminal and run these commands.
 
-1. Start Ganache server:
+1. Start Hardhat node:
 ```sh
-> ganache-cli --port 7545
+> npx hardhat node
 ```
 
-2. Run separate terminal
+2. Open new terminal window
 
-3. Apply migrations:
+3. Compile contracts:
 ```sh
-> truffle migrate --network test
+> npx hardhat compile
 ```
 
-4. Start truffle console:
+4. Deploy contracts:
 ```sh
-> truffle console --network test
+> npx hardhat run --network localhost scripts/deploy.js
 ```
 
-5. You are set to play with the contract or just follow the commands from example.js
+5. Start interactive console for a trial:
+```sh
+> npx hardhat console --network localhost
+```
