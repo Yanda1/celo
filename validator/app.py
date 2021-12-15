@@ -106,8 +106,7 @@ class EventWatcher(Thread):
         )
         return rounded_decimal
 
-    @staticmethod
-    def find_oposit_order(order, prev_orders):
+    def find_oposit_order(self, order, prev_orders):
         result = prev_orders[0]
 
         for idx in range(len(prev_orders)-1, -1, -1):
@@ -218,7 +217,10 @@ class EventWatcher(Thread):
                 transaction,
                 private_key=self.private_key
             )
-            self.kit.w3.eth.sendRawTransaction(signed_txn.rawTransaction)
+            try:
+                self.kit.w3.eth.sendRawTransaction(signed_txn.rawTransaction)
+            except ValueError as err:
+                print(f'\tError in w3.eth.sendRawTransaction: {str(err)}')
         else:
             print('\tYour account address is not permitted to validate.')
 
