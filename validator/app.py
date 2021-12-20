@@ -120,7 +120,7 @@ class EventWatcher(Thread):
                     break
             elif order['side'] == Side.SELL and prev_orders[idx]['side'] == Side.BUY:
                 digits = abs(order['size_sent'].as_tuple().exponent)
-                if self.round_down(prev_orders[idx]['size_sent'], digits) == order[idx]['size_sent']:
+                if self.round_down(prev_orders[idx]['size_sent'], digits) == order['size_sent']:
                     result = prev_orders[idx]
                     break
 
@@ -203,6 +203,8 @@ class EventWatcher(Thread):
         if validation_requests > 0 and reqired_version <= VERSION:
             is_valid = self.validate_bot(event['args']['customer'], event['args']['productId'])
             print(f'\tValidated with "{is_valid}"')
+            if reqired_version > VERSION:
+                print(f'Please update the app to the latest version: {VERSION}')
             transaction = self.contract.functions.validateTermination(
                 event['args']['customer'],
                 event['args']['productId'],
@@ -221,8 +223,10 @@ class EventWatcher(Thread):
                 self.kit.w3.eth.sendRawTransaction(signed_txn.rawTransaction)
             except ValueError as err:
                 print(f'\tError in w3.eth.sendRawTransaction: {str(err)}')
+        elif reqired_version > VERSION:
+            print(f'Important, update app to the minimum required version or higher: {VERSION}')
         else:
-            print('\tYour account address is not permitted to validate.')
+            print('Your account address is not permitted to validate.')
 
     def run(self):
         terminate = self.contract.events.Terminate
