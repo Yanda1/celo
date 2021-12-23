@@ -177,12 +177,12 @@ class EventWatcher(Thread):
                 if order['side'] == Side.BUY:
                     price_deviation = abs(
                         (abs(order['price'] - previous_order['price']) / previous_order['price'])
-                        - bot['rq']
+                        - Decimal(bot['rq'])
                     )
                 else:
                     price_deviation = abs(
                         (abs(order['price'] - previous_order['price']) / previous_order['price'])
-                        - bot['rb']
+                        - Decimal(bot['rb'])
                     )
 
                 if price_deviation > RESTART_THRESHOLD:
