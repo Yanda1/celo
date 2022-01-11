@@ -5,11 +5,13 @@ from threading import Thread, Event
 import json
 import time
 import math
+import decimal
 from decimal import Decimal, ROUND_DOWN
 
 import requests
 from celo_sdk.kit import Kit
 
+from converter import Converter
 from constants import (
     NETWORK, CONTRACT_ADDR, CONTRACT_ABI, SERVICE_ADDR, REFRESH_INTERVAL, RESTART_THRESHOLD,
     VERSION, BINANCE_PAIRS_URL,
@@ -192,8 +194,8 @@ class EventWatcher(Thread):
 
         return result
 
-    def handle_event(self, event):
-        print('New event: ', event)
+    def handle_terminate_event(self, event):
+        print('New terminate event: ', event)
         active_account = self.kit.wallet.active_account.address
         # Is this validator address ever requested to validate?
         validation_requests = self.contract.functions.validators(active_account).call()[0]
@@ -228,17 +230,82 @@ class EventWatcher(Thread):
         else:
             print('Your account address is not permitted to validate.')
 
+    def calculate_cost(self, service, data):
+        result = 0
+        bot_data = json.loads(data)
+        asset = bot_data['ia']
+        amount = Decimal(bot_data['i'])
+
+        converter = Converter('USDT')
+        # Convert requested amount into USDT
+        usdt_amount = converter.convert(amount, asset)
+        # Calculate cost in YND
+        ynd_price = Decimal('0.019')
+        fee = Decimal('0.002')
+
+        with decimal.localcontext() as ctx:
+            ctx.rounding = decimal.ROUND_UP
+            result = round((usdt_amount * fee) / ynd_price, 18)
+
+        return result
+
+    def handle_cost_event(self, event):
+        print('New cost request event: ', event)
+        active_account = self.kit.wallet.active_account.address
+        # Is this validator ready to give a respond
+        ready = self.contract.functions.validators(active_account).call()[2]
+        # Get required version for validating current service
+        reqired_version = self.contract.functions.services(SERVICE_ADDR).call()[2]
+
+        if ready and reqired_version <= VERSION:
+            cost = self.calculate_cost(event['args']['service'], event['args']['data'])
+            print(f'\tCalculated cost: "{cost}"')
+            transaction = self.contract.functions.setProcessCost(
+                event['args']['customer'],
+                event['args']['productId'],
+                self.kit.w3.toWei(cost, 'ether')
+            ).buildTransaction({
+                'gas': 250000,
+                'gasPrice': self.kit.w3.toWei(Decimal('1'), 'gwei'),
+                'from': active_account,
+                'nonce': self.kit.w3.eth.getTransactionCount(active_account)
+            })
+            signed_txn = self.kit.w3.eth.account.signTransaction(
+                transaction,
+                private_key=self.private_key
+            )
+            process_state = self.contract.functions.processes(event['args']['customer'], event['args']['productId']).call()[0]
+            if process_state == 0:
+                try:
+                    self.kit.w3.eth.sendRawTransaction(signed_txn.rawTransaction)
+                except ValueError as err:
+                    print(f'\tError in w3.eth.sendRawTransaction: {str(err)}')
+        elif reqired_version > VERSION:
+            print(f'Important, update app to the minimum required version or higher: {VERSION}')
+        else:
+            print('Your account address is not permitted to validate.')
+
     def run(self):
         terminate = self.contract.events.Terminate
+        cost_request = self.contract.events.CostRequest
+        curent_block = 0
         while not self.stopped.wait(REFRESH_INTERVAL):
             if self.latest_block:
-                for event in terminate.getLogs(fromBlock=self.latest_block + 1):
-                    self.handle_event(event)
-                    self.latest_block = event['blockNumber']
+                fromBlock = self.latest_block + 1
             else:
-                for event in terminate.getLogs(fromBlock='latest'):
-                    self.handle_event(event)
-                    self.latest_block = event['blockNumber']
+                fromBlock = 'latest'
+
+            for event in terminate.getLogs(fromBlock=fromBlock):
+                self.handle_terminate_event(event)
+                curent_block = event['blockNumber']
+            for event in cost_request.getLogs(fromBlock=fromBlock):
+                self.handle_cost_event(event)
+                if event['blockNumber'] > curent_block:
+                    curent_block = event['blockNumber']
+
+            if curent_block > 0:
+                self.latest_block = curent_block
+
         sys.exit()
 
 
