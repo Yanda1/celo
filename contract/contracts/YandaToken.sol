@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.3;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/security/Pausable.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/draft-ERC20Permit.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/draft-ERC20PermitUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20VotesUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 
+contract YandaToken is Initializable, ERC20Upgradeable, PausableUpgradeable, AccessControlUpgradeable, ERC20PermitUpgradeable, ERC20VotesUpgradeable {
 
-contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
-    enum State { AWAITING_TRANSFER, AWAITING_TERMINATION, AWAITING_VALIDATION, COMPLETED }
+    using SafeMath for uint256;
+
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    address private _owner;
+
+    enum State { AWAITING_COST, AWAITING_TRANSFER, AWAITING_TERMINATION, AWAITING_VALIDATION, COMPLETED }
     struct Process {
         State state;
         uint cost;
@@ -28,6 +36,7 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
     struct Validator {
         uint requests;
         uint validations;
+        bool ready;
     }
     mapping(address => mapping(bytes32 => Process)) public processes;
     mapping(address => bytes32) public depositingProducts;
@@ -57,31 +66,51 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         bytes32 indexed productId,
         bool success
     );
+    event CostRequest(
+        address indexed customer,
+        address indexed service,
+        bytes32 indexed productId,
+        string data
+    );
+    event CostResponse(
+        address indexed customer,
+        address indexed service,
+        bytes32 indexed productId,
+        uint cost
+    );
 
     modifier onlyService() {
         require(services[msg.sender].validationPerc > 0, "Only service can call this method");
         _;
     }
 
-    modifier onlyValidator() {
-        require(validators[msg.sender].requests > 0, "Only validator can call this method");
-        _;
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() initializer {}
+
+    function initialize() initializer public {
+        __ERC20_init("YandaToken", "YND");
+        __Pausable_init();
+        __AccessControl_init();
+        __ERC20Permit_init("YandaToken");
+
+        _mint(msg.sender, 1000000000 * 10 ** decimals());
+        _owner = msg.sender;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(PAUSER_ROLE, msg.sender);
+        _grantRole(MINTER_ROLE, msg.sender);
     }
 
-    constructor() ERC20("YandaToken", "YND") ERC20Permit("YandaToken") {
-        _mint(msg.sender, 10000000 * 10 ** decimals());
+    function owner() public view virtual returns(address) {
+        return _owner;
     }
 
-    function pause() public onlyOwner {
+    function pause() public onlyRole(PAUSER_ROLE) {
         _pause();
     }
 
-    function unpause() public onlyOwner {
+    function unpause() public onlyRole(PAUSER_ROLE) {
         _unpause();
-    }
-
-    function mint(address to, uint256 amount) public onlyOwner {
-        _mint(to, amount);
     }
 
     function _beforeTokenTransfer(address from, address to, uint256 amount)
@@ -96,21 +125,21 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
 
     function _afterTokenTransfer(address from, address to, uint256 amount)
         internal
-        override(ERC20, ERC20Votes)
+        override(ERC20Upgradeable, ERC20VotesUpgradeable)
     {
         super._afterTokenTransfer(from, to, amount);
     }
 
     function _mint(address to, uint256 amount)
         internal
-        override(ERC20, ERC20Votes)
+        override(ERC20Upgradeable, ERC20VotesUpgradeable)
     {
         super._mint(to, amount);
     }
 
     function _burn(address account, uint256 amount)
         internal
-        override(ERC20, ERC20Votes)
+        override(ERC20Upgradeable, ERC20VotesUpgradeable)
     {
         super._burn(account, amount);
     }
@@ -120,6 +149,10 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
             require(
                 processes[msg.sender][depositingProducts[msg.sender]].state == State.AWAITING_TRANSFER,
                 "You don't have a deposit awaiting process, please create it first"
+            );
+            require(
+                processes[msg.sender][depositingProducts[msg.sender]].cost == amount,
+                "Deposit amount doesn't match with the requested cost"
             );
 
             _transfer(_msgSender(), recipient, amount);
@@ -137,9 +170,15 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         return true;
     }
 
-    function addService(address service, address[] calldata vList, uint vPerc, uint cPerc, uint vVer)
+    function _setValidatorsReady(address[] memory vList) internal {
+        for(uint i=0; i < vList.length; i++) { 
+            validators[vList[i]].ready = true;
+        }
+    }
+
+    function addService(address service, address[] memory vList, uint vPerc, uint cPerc, uint vVer)
         public
-        onlyOwner
+        onlyRole(DEFAULT_ADMIN_ROLE)
     {
         services[service] = Service({
             validators: vList,
@@ -147,23 +186,31 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
             commissionPerc: cPerc,
             validatorVersion: vVer
         });
+        _setValidatorsReady(vList);
     }
 
-    function setValidators(address[] calldata vList) public onlyService {
+    function setValidators(address[] memory vList) public onlyService {
         services[msg.sender].validators = vList;
+        _setValidatorsReady(vList);
     }
 
     function setValidatorVer(uint vVer) public onlyService {
         services[msg.sender].validatorVersion = vVer;
     }
 
-    function createProcess(address service, uint256 amount, bytes32 productId, string calldata data) public {
+    function _getProcessCost(address customer, address service, bytes32 productId, string memory data) internal {
+        emit CostRequest(customer, service, productId, data);
+    }
+
+    function createProcess(address service, bytes32 productId, string memory data) public {
         require(services[service].validationPerc > 0, 'Requested service address not found');
         require(processes[msg.sender][productId].service == address(0), 'Process with specified productId already exist');
 
+        _getProcessCost(msg.sender, service, productId, data);
+
         processes[msg.sender][productId] = Process({
-            state: State.AWAITING_TRANSFER,
-            cost: amount,
+            state: State.AWAITING_COST,
+            cost: 0,
             service: service,
             productId: productId,
             productData: data,
@@ -179,6 +226,15 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         depositingProducts[msg.sender] = productId;
     }
 
+    function setProcessCost(address customer, bytes32 productId, uint256 cost) public {
+        require(validators[msg.sender].ready == true, "Only validator can call this method");
+        require(processes[customer][productId].state == State.AWAITING_COST, "Cost is already set");
+
+        processes[customer][productId].cost = cost;
+        processes[customer][productId].state = State.AWAITING_TRANSFER;
+        emit CostResponse(customer, processes[customer][productId].service, productId, cost);
+    }
+
     function declareAction(address customer, bytes32 productId, string calldata data)
         public onlyService
     {
@@ -191,7 +247,11 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         }
     }
 
-    function startTermination(address customer, bytes32 productId) public onlyService {
+    function startTermination(address customer, bytes32 productId) public {
+        require(
+            (services[msg.sender].validationPerc > 0) || (msg.sender == customer),
+            "Only service or product customer can call this method"
+        );
         require(processes[customer][productId].state == State.AWAITING_TERMINATION, "Cannot start termination");
         processes[customer][productId].state = State.AWAITING_VALIDATION;
         // Update validators requests score
@@ -233,9 +293,10 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
         return rewards_sum;
     }
 
-    function validateTermination(address customer, bytes32 productId, bool passed) public onlyValidator {
+    function validateTermination(address customer, bytes32 productId, bool passed) public {
+        require(validators[msg.sender].ready == true, "Only validator can call this method");
         require(processes[customer][productId].state >= State.AWAITING_VALIDATION, "Cannot validate delivary");
-        
+
         if(passed) {
             processes[customer][productId].validations += 1;
         } else {
@@ -273,8 +334,8 @@ contract YandaToken is ERC20, Pausable, Ownable, ERC20Permit, ERC20Votes {
     }
 
     function claimToken(uint256 amount) public returns (bool) {
-        if(this.balanceOf(msg.sender) < 20 ether && amount < 100 ether) {
-            _transfer(this.owner(), _msgSender(), amount);
+        if(this.balanceOf(msg.sender) < 5000000 ether && amount <= 1000 ether) {
+            _transfer(owner(), _msgSender(), amount);
             return true;
         } else {
             return false;
